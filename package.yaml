@@ -1,0 +1,51 @@
+name: calendar-txt
+version: 0.1.0.0
+synopsis: Tools for working with calendar.txt files
+description: Please see the README at <https://github.com/jwoudenberg/calendar-txt>.
+author: Jasper Woudenberg
+maintainer: mail@jasperwoudenberg.com
+copyright: 2021 Jasper Woudenberg
+homepage: https://github.com/jwoudenberg/calendar-txt#readme
+license-file: LICENSE
+category: Web
+github: jwoudenberg/calendar-txt
+extra-doc-files:
+- README.md
+library:
+  exposed-modules:
+  - CalendarTxt
+  source-dirs: src
+executables:
+  calendar-txt:
+    dependencies:
+    - calendar-txt
+    main: Main.hs
+    source-dirs: app
+    ghc-options:
+    - -threaded
+    - -rtsopts "-with-rtsopts=-N -T"
+    - -O2
+dependencies:
+- attoparsec >= 0.13.0.0 && < 0.15
+- base >= 4.10.1.0 && < 5
+- bytestring >= 0.10.8.2 && < 0.12
+- directory >= 1.3.3.0 && < 1.4
+- filepath >= 1.4.0.0 && < 1.5
+- text >= 1.2.3.0 && < 1.3
+ghc-options:
+- -Wall
+- -Werror
+- -Wcompat
+- -Widentities
+- -Wincomplete-record-updates
+- -Wpartial-fields
+- -Wredundant-constraints
+- -Wincomplete-uni-patterns
+default-extensions:
+- DeriveGeneric
+- GeneralizedNewtypeDeriving
+- NamedFieldPuns
+- NumericUnderscores
+- OverloadedStrings
+- ScopedTypeVariables
+- StrictData
