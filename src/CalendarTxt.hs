@@ -1,15 +1,25 @@
-module CalendarTxt where
+module CalendarTxt (main) where
 
 import qualified Chronos
 import qualified Data.Attoparsec.Text as P
+import qualified Data.ByteString.Builder as B
 import qualified Data.Char as Char
+import Data.Function ((&))
+import qualified Data.List
+import qualified Data.List.NonEmpty as NonEmpty
 import Data.Text (Text)
+import qualified Data.Text.Encoding
 import qualified Data.Text.IO
+import qualified System.Exit
+import qualified System.IO
 
 main :: IO ()
 main = do
   contents <- Data.Text.IO.readFile "calendar.txt"
-  print (P.parseOnly parser contents)
+  let parseResult = P.parseOnly parser contents
+  case parseResult of
+    Left err -> System.Exit.die err
+    Right events -> B.hPutBuilder System.IO.stdout (prettyPrint events)
 
 data Event = Event
   { day :: Chronos.Date,
@@ -22,27 +32,129 @@ data Time
   = AllDay
   | StartsAt Chronos.TimeOfDay
   | Timeslot Chronos.TimeOfDay Chronos.TimeOfDay
-  deriving (Show)
+  deriving (Eq, Show)
+
+instance Ord Time where
+  time1 <= time2 = startAt time1 <= startAt time2
+
+startAt :: Time -> Maybe Chronos.TimeOfDay
+startAt AllDay = Nothing
+startAt (StartsAt time) = Just time
+startAt (Timeslot time _) = Just time
+
+prettyPrint :: [Event] -> B.Builder
+prettyPrint events = foldMap printDay (NonEmpty.groupAllWith day events)
+
+printDay :: NonEmpty.NonEmpty Event -> B.Builder
+printDay events =
+  let date = day (NonEmpty.head events)
+   in Chronos.builderUtf8_Ymd (Just '-') date
+        <> " "
+        <> printWeekNumber date
+        <> " "
+        <> printDayOfWeek date
+        <> "  "
+        <> printEvents (Data.List.sortOn time (NonEmpty.toList events))
+        <> "\n"
+
+printEvents :: [Event] -> B.Builder
+printEvents events =
+  printEvent <$> events
+    & Data.List.intersperse " "
+    & mconcat
+
+printEvent :: Event -> B.Builder
+printEvent event =
+  printTime (time event)
+    <> " "
+    <> B.byteString (Data.Text.Encoding.encodeUtf8 (description event))
+    <> "."
+
+printTime :: Time -> B.Builder
+printTime time =
+  case time of
+    AllDay -> ""
+    StartsAt startTime -> printSingleTime startTime
+    Timeslot startTime endTime -> printSingleTime startTime <> "-" <> printSingleTime endTime
+
+printSingleTime :: Chronos.TimeOfDay -> B.Builder
+printSingleTime time =
+  let hours = Chronos.timeOfDayHour time
+      minutes = Chronos.timeOfDayMinute time
+   in printWithLeadingZero hours
+        <> (if minutes == 0 then "" else ":" <> printWithLeadingZero minutes)
+
+dateToDayOfWeek :: Chronos.Date -> Chronos.DayOfWeek
+dateToDayOfWeek date =
+  Chronos.Datetime date (Chronos.TimeOfDay 0 0 0)
+    & Chronos.datetimeToDayOfWeek
+
+printDayOfWeek :: Chronos.Date -> B.Builder
+printDayOfWeek date =
+  Chronos.caseDayOfWeek
+    ( Chronos.buildDayOfWeekMatch
+        "Sun"
+        "Mon"
+        "Tue"
+        "Wed"
+        "Thu"
+        "Fri"
+        "Sat"
+    )
+    (dateToDayOfWeek date)
+
+printWeekNumber :: Chronos.Date -> B.Builder
+printWeekNumber date =
+  let weekNumber = dateToWeekNumber date
+   in "w" <> printWithLeadingZero weekNumber
+
+printWithLeadingZero :: Int -> B.Builder
+printWithLeadingZero n =
+  (if n < 10 then "0" else "") <> (B.intDec n)
+
+-- | Get the week number based on the current date.
+-- We use the ISO definition of week one: The week that has the first Thursday
+-- of the year in it.
+-- See: https://en.wikipedia.org/wiki/ISO_week_date#First_week
+dateToWeekNumber :: Chronos.Date -> Int
+dateToWeekNumber date =
+  let dayOfYear =
+        Chronos.dateToDay date
+          & Chronos.dayToOrdinalDate
+          & Chronos.ordinalDateDayOfYear
+          & Chronos.getDayOfYear
+          & (+) (-1) -- Make first day of the year be 0.
+      daysTillThursdayThisWeek =
+        getDayOfWeek (Chronos.thursday) - getDayOfWeek (dateToDayOfWeek date)
+   in (dayOfYear + daysTillThursdayThisWeek) `div` 7
+        + 1 -- Make first week of the year be 1.
+
+getDayOfWeek :: Chronos.DayOfWeek -> Int
+getDayOfWeek dayOfWeek =
+  Chronos.caseDayOfWeek
+    (Chronos.buildDayOfWeekMatch 6 0 1 2 3 4 5)
+    dayOfWeek
 
 parser :: P.Parser [Event]
 parser = mconcat <$> P.sepBy' lineParser P.endOfLine
 
 lineParser :: P.Parser [Event]
 lineParser = do
-  P.skipSpace
+  skipSpace
   day <- Chronos.parser_Ymd_lenient
-  P.skipSpace
+  skipSpace
   _ <- P.many' weekOrDayInfo
-  P.skipSpace
-  time <- timeParser
-  P.skipSpace
-  events <- P.sepBy' (Event day time <$> descriptionParser) (P.char '.')
+  skipSpace
+  events <-
+    P.sepBy'
+      (uncurry (Event day) <$> descriptionParser)
+      (P.char '.' <* skipSpace)
   P.option () (P.skip (== '.'))
   pure events
 
 weekOrDayInfo :: P.Parser ()
 weekOrDayInfo = do
-  word <- P.many1' P.letter
+  word <- P.many1' (P.satisfy Char.isAlphaNum)
   let isWeekOrDayInfo =
         case Char.toLower <$> word of
           "mon" -> True
@@ -54,16 +166,16 @@ weekOrDayInfo = do
           "sun" -> True
           'w' : rest -> all Char.isDigit rest
           _ -> False
-  P.skipSpace
+  skipSpace
   if isWeekOrDayInfo then pure () else fail "not week or day info"
 
 timeParser :: P.Parser Time
 timeParser =
   P.option AllDay $ do
     startTime <- timeOfDayParser
-    P.skipSpace
+    skipSpace
     P.option () (P.skip (== '-'))
-    P.skipSpace
+    skipSpace
     P.option (StartsAt startTime) (Timeslot startTime <$> timeOfDayParser)
 
 timeOfDayParser :: P.Parser Chronos.TimeOfDay
@@ -86,6 +198,12 @@ timeFromHoursAndMinutes :: [Char] -> [Char] -> Chronos.TimeOfDay
 timeFromHoursAndMinutes hours minutes =
   Chronos.TimeOfDay (read hours) (read minutes) 0
 
-descriptionParser :: P.Parser Text
-descriptionParser =
-  P.skipSpace *> P.takeWhile1 (P.notInClass ".\n\r") <* P.skipSpace
+descriptionParser :: P.Parser (Time, Text)
+descriptionParser = do
+  time <- timeParser
+  skipSpace
+  description <- P.takeWhile1 (P.notInClass ".\n\r")
+  pure (time, description)
+
+skipSpace :: P.Parser ()
+skipSpace = P.skipWhile P.isHorizontalSpace
