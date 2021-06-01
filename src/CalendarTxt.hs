@@ -1,9 +1,16 @@
-module CalendarTxt (main) where
+module CalendarTxt (main, test) where
 
 import qualified Chronos
+import Conduit (ConduitT, runConduit, (.|))
+import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.Parser
+import qualified Data.Attoparsec.ByteString as PB
 import qualified Data.Attoparsec.Text as P
+import Data.ByteString (ByteString)
 import qualified Data.ByteString.Builder as B
+import qualified Data.ByteString.Lazy
 import qualified Data.Char as Char
+import qualified Data.Conduit.Combinators as C
 import Data.Function ((&))
 import qualified Data.List
 import qualified Data.List.NonEmpty as NonEmpty
@@ -15,6 +22,47 @@ import qualified System.IO
 
 main :: IO ()
 main = do
+  test
+  lsp
+
+lsp :: IO ()
+lsp =
+  runConduit $
+    C.stdin
+      .| newlineSeperatedJson
+      .| C.map (\(c :: ()) -> Data.ByteString.Lazy.toStrict $ Aeson.encode c)
+      .| C.print
+
+newlineSeperatedJson :: (Monad m, Aeson.FromJSON a) => ConduitT Data.ByteString.ByteString a m ()
+newlineSeperatedJson =
+  C.concatMapAccum (incrementalParseJsonStep []) (PB.parse json)
+    .| C.map
+      ( \val ->
+          case Aeson.fromJSON val of
+            Aeson.Error err -> Left err
+            Aeson.Success res -> Right res
+      )
+    .| C.concat
+
+incrementalParseJsonStep ::
+  [Aeson.Value] ->
+  ByteString ->
+  (ByteString -> PB.Result Aeson.Value) ->
+  ((ByteString -> PB.Result Aeson.Value), [Aeson.Value])
+incrementalParseJsonStep acc chunk continue =
+  case continue chunk of
+    PB.Fail rest _ _ -> incrementalParseJsonStep acc (rest <> chunk) (PB.parse (skipUntilNewline *> json))
+    PB.Partial f -> (f, [])
+    PB.Done rest val -> incrementalParseJsonStep (val : acc) (rest <> chunk) (PB.parse json)
+
+skipUntilNewline :: PB.Parser ()
+skipUntilNewline = PB.skipWhile (/= 10 {- \n -})
+
+json :: PB.Parser Aeson.Value
+json = PB.skipWhile (== 10 {- \n -}) *> Data.Aeson.Parser.json
+
+test :: IO ()
+test = do
   contents <- Data.Text.IO.readFile "calendar.txt"
   let parseResult = P.parseOnly parser contents
   case parseResult of
